@@ -34,11 +34,8 @@
 #define PUBFRAME_PERIOD (20)
 
 /*** Time Log Variables ***/
-double kdtree_incremental_time = 0.0, kdtree_search_time = 0.0, kdtree_delete_time = 0.0;
-double T1[MAXN], s_plot[MAXN], s_plot2[MAXN], s_plot3[MAXN], s_plot4[MAXN], s_plot5[MAXN], s_plot6[MAXN], s_plot7[MAXN],
-    s_plot8[MAXN], s_plot9[MAXN], s_plot10[MAXN], s_plot11[MAXN];
 double match_time = 0, solve_time = 0;
-int kdtree_size_st = 0, kdtree_size_end = 0, add_point_size = 0, kdtree_delete_counter = 0;
+int kdtree_size_st = 0, add_point_size = 0, kdtree_delete_counter = 0;
 bool runtime_pos_log = false, pcd_save_en = false, time_sync_en = false, extrinsic_est_en = true, path_en = true;
 /**************************/
 
@@ -50,17 +47,15 @@ double time_diff_lidar_to_imu = 0.0;
 mutex mtx_buffer;
 condition_variable sig_buffer;
 
-string root_dir = ROOT_DIR;
 string map_file_path, lid_topic, imu_topic;
 
 double res_mean_last = 0.05, total_residual = 0.0;
 double last_timestamp_lidar = 0, last_timestamp_imu = -1.0;
 double gyr_cov = 0.1, acc_cov = 0.1, b_gyr_cov = 0.0001, b_acc_cov = 0.0001;
 double filter_size_corner_min = 0, filter_size_surf_min = 0, filter_size_map_min = 0, fov_deg = 0;
-double cube_len = 0, HALF_FOV_COS = 0, FOV_DEG = 0, total_distance = 0, lidar_end_time = 0, first_lidar_time = 0.0;
-int effct_feat_num = 0, time_log_counter = 0, scan_count = 0, publish_count = 0;
-int iterCount = 0, feats_down_size = 0, NUM_MAX_ITERATIONS = 0, laserCloudValidNum = 0, pcd_save_interval = -1,
-    pcd_index = 0;
+double cube_len = 0, HALF_FOV_COS = 0, FOV_DEG = 0, lidar_end_time = 0, first_lidar_time = 0.0;
+int effct_feat_num = 0, scan_count = 0, publish_count = 0;
+int feats_down_size = 0, NUM_MAX_ITERATIONS = 0, pcd_save_interval = -1;
 bool point_selected_surf[100000] = {0};
 bool lidar_pushed, flg_first_scan = true, flg_exit = false, flg_EKF_inited;
 bool scan_pub_en = false, dense_pub_en = false, scan_body_pub_en = false;
@@ -176,7 +171,6 @@ bool Localmap_Initialized = false;
 void lasermap_fov_segment() {
   cub_needrm.clear();
   kdtree_delete_counter = 0;
-  kdtree_delete_time = 0.0;
   pointBodyToWorld(XAxisPoint_body, XAxisPoint_world);
   V3D pos_LiD = pos_lid;
   if (!Localmap_Initialized) {
@@ -217,9 +211,7 @@ void lasermap_fov_segment() {
   LocalMap_Points = New_LocalMap_Points;
 
   points_cache_collect();
-  double delete_begin = omp_get_wtime();
   if (cub_needrm.size() > 0) kdtree_delete_counter = ikdtree.Delete_Point_Boxes(cub_needrm);
-  kdtree_delete_time = omp_get_wtime() - delete_begin;
 }
 
 /// sensor_msgs消息格式的点云回调函数
@@ -237,7 +229,6 @@ void standard_pcl_cbk(const sensor_msgs::PointCloud2::ConstPtr& msg) {
   lidar_buffer.push_back(ptr);
   time_buffer.push_back(msg->header.stamp.toSec());
   last_timestamp_lidar = msg->header.stamp.toSec();
-  s_plot11[scan_count] = omp_get_wtime() - preprocess_start_time;
   mtx_buffer.unlock();
   sig_buffer.notify_all();
 }
@@ -271,8 +262,6 @@ void livox_pcl_cbk(const fast_lio::CustomMsg::ConstPtr& msg) {
   p_pre->process(msg, ptr);
   lidar_buffer.push_back(ptr);
   time_buffer.push_back(last_timestamp_lidar);
-
-  s_plot11[scan_count] = omp_get_wtime() - preprocess_start_time;
   mtx_buffer.unlock();
   sig_buffer.notify_all();
 }
@@ -392,11 +381,9 @@ void map_incremental() {
     }
   }
 
-  double st_time = omp_get_wtime();
   add_point_size = ikdtree.Add_Points(PointToAdd, true);
   ikdtree.Add_Points(PointNoNeedDownsample, false);
   add_point_size = PointToAdd.size() + PointNoNeedDownsample.size();
-  kdtree_incremental_time = omp_get_wtime() - st_time;
 }
 
 void publish_frame_world(const ros::Publisher& pubLaserCloudFull) {
@@ -714,7 +701,6 @@ int main(int argc, char** argv) {
       }
       double match_start, solve_start;
       match_time = 0;
-      kdtree_search_time = 0.0;
       solve_time = 0;
       p_imu->Process(Measures, kf, feats_undistort);
       state_point = kf.get_x();
@@ -764,8 +750,6 @@ int main(int argc, char** argv) {
       }
       pointSearchInd_surf.resize(feats_down_size);
       Nearest_Points.resize(feats_down_size);
-      int rematch_num = 0;
-      bool nearest_search_en = true;  //
       /// ieskf
       double solve_H_time = 0;
       kf.update_iterated_dyn_share_modified(LASER_POINT_COV, solve_H_time);
@@ -781,9 +765,15 @@ int main(int argc, char** argv) {
       /// 增量式地图
       map_incremental();
       /// pub点云
-      if (path_en) publish_path(pubPath);
-      if (scan_pub_en || pcd_save_en) publish_frame_world(pubLaserCloudFull);
-      if (scan_pub_en && scan_body_pub_en) publish_frame_body(pubLaserCloudFull_body);
+      if (path_en) {
+        publish_path(pubPath);
+      }
+      if (scan_pub_en || pcd_save_en) {
+        publish_frame_world(pubLaserCloudFull);
+      }
+      if (scan_pub_en && scan_body_pub_en) {
+        publish_frame_body(pubLaserCloudFull_body);
+      }
       // publish_effect_world(pubLaserCloudEffect);
       // publish_map(pubLaserCloudMap);
     }
